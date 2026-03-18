@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { startServer } from "./index.js";
 import { loadConfig, getConfigPath } from "./config.js";
-import { logInfo, logError } from "./logger.js";
+import { logInfo, logError, setLogFile } from "./logger.js";
 import { resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 
@@ -62,10 +62,17 @@ async function main() {
   const config = await loadConfig();
   const port = config.port ?? 3131;
 
-  const server = await startServer(config);
-
   // Check if --no-claude flag is present (proxy-only mode)
   const noClaude = args.includes("--no-claude");
+
+  // When launching with Claude Code, log to file to avoid corrupting its TUI
+  if (!noClaude) {
+    const runtimeDir =
+      process.env.XDG_RUNTIME_DIR ?? resolve(process.env.HOME ?? "~", ".local", "state");
+    setLogFile(resolve(runtimeDir, "engawa", "proxy.log"));
+  }
+
+  const server = await startServer(config);
   const claudeArgs = args.filter((a) => a !== "--no-claude");
 
   if (noClaude) {

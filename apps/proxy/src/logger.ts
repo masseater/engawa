@@ -1,21 +1,36 @@
-const COLORS = {
-  reset: "\x1b[0m",
-  dim: "\x1b[2m",
-  cyan: "\x1b[36m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  red: "\x1b[31m",
-  magenta: "\x1b[35m",
-} as const;
+import { resolve } from "node:path";
+import { appendFileSync, mkdirSync } from "node:fs";
 
 let verbose = true;
+let logFile: string | null = null;
 
 export function setVerbose(v: boolean) {
   verbose = v;
 }
 
+export function setLogFile(path: string) {
+  logFile = path;
+  mkdirSync(resolve(path, ".."), { recursive: true });
+}
+
 function timestamp(): string {
   return new Date().toISOString().slice(11, 23);
+}
+
+function write(msg: string) {
+  if (logFile) {
+    appendFileSync(logFile, msg + "\n");
+  } else {
+    console.log(msg);
+  }
+}
+
+function writeErr(msg: string) {
+  if (logFile) {
+    appendFileSync(logFile, msg + "\n");
+  } else {
+    console.error(msg);
+  }
 }
 
 export function logRequest(
@@ -26,40 +41,27 @@ export function logRequest(
   targetModel: string,
 ) {
   if (!verbose) return;
-  console.log(
-    `${COLORS.dim}[${timestamp()}]${COLORS.reset} ${COLORS.cyan}${method}${COLORS.reset} ${path} ` +
-      `${COLORS.yellow}${modelId}${COLORS.reset} → ${COLORS.green}${provider}${COLORS.reset}` +
-      `${COLORS.dim}(${targetModel})${COLORS.reset}`,
-  );
+  write(`[${timestamp()}] ${method} ${path} ${modelId} → ${provider}(${targetModel})`);
 }
 
 export function logStream(modelId: string, event: string) {
   if (!verbose) return;
-  console.log(
-    `${COLORS.dim}[${timestamp()}]${COLORS.reset} ${COLORS.magenta}SSE${COLORS.reset} ` +
-      `${COLORS.dim}${modelId}${COLORS.reset} ${event}`,
-  );
+  write(`[${timestamp()}] SSE ${modelId} ${event}`);
 }
 
 export function logError(message: string, error?: unknown) {
-  console.error(
-    `${COLORS.dim}[${timestamp()}]${COLORS.reset} ${COLORS.red}ERROR${COLORS.reset} ${message}`,
-    error instanceof Error ? error.message : (error ?? ""),
+  writeErr(
+    `[${timestamp()}] ERROR ${message} ${error instanceof Error ? error.message : (error ?? "")}`,
   );
 }
 
 export function logInfo(message: string) {
   if (!verbose) return;
-  console.log(
-    `${COLORS.dim}[${timestamp()}]${COLORS.reset} ${COLORS.green}INFO${COLORS.reset} ${message}`,
-  );
+  write(`[${timestamp()}] ${message}`);
 }
 
 export function logBody(label: string, body: Record<string, unknown>) {
   if (!verbose) return;
   const { messages: _m, system: _s, ...rest } = body;
-  console.log(
-    `${COLORS.dim}[${timestamp()}]${COLORS.reset} ${COLORS.yellow}BODY${COLORS.reset} ${label}`,
-    JSON.stringify(rest, null, 2),
-  );
+  write(`[${timestamp()}] BODY ${label} ${JSON.stringify(rest)}`);
 }
