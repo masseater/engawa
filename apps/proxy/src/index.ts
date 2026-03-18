@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { resolveRoute } from "./router.js";
 import { logRequest, logInfo, logBody, setVerbose } from "./logger.js";
 import { errorResponse } from "./errors.js";
+import { sanitizeBody } from "./sanitize.js";
 import { handleAnthropicRequest, handleAnthropicCountTokens } from "./providers/anthropic.js";
 import { handleOpenAIRequest, handleOpenAICountTokens } from "./providers/openai.js";
 import type { EngawaConfig, ResolvedRoute } from "./types.js";
@@ -47,8 +48,9 @@ app.post("/v1/messages", async (c) => {
   }
 
   logRequest("POST", "/v1/messages", modelId, route.config.provider, route.targetModel);
-  logBody("incoming", body);
-  return dispatch(c.req.raw, body, route, "messages");
+  const cleaned = sanitizeBody(body);
+  logBody("incoming", cleaned);
+  return dispatch(c.req.raw, cleaned, route, "messages");
 });
 
 app.post("/v1/messages/count_tokens", async (c) => {
@@ -71,7 +73,7 @@ app.post("/v1/messages/count_tokens", async (c) => {
     route.config.provider,
     route.targetModel,
   );
-  return dispatch(c.req.raw, body, route, "count_tokens");
+  return dispatch(c.req.raw, sanitizeBody(body), route, "count_tokens");
 });
 
 app.get("/health", (c) => c.json({ status: "ok" }));

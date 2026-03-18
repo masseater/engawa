@@ -117,16 +117,14 @@ function convertMessages(
       result.push({
         role: "assistant",
         content: textContent || null,
-        tool_calls: toolUseBlocks
-          .filter((tu) => tu.name)
-          .map((tu) => ({
-            id: tu.id ?? "",
-            type: "function" as const,
-            function: {
-              name: tu.name ?? "",
-              arguments: JSON.stringify(tu.input ?? {}),
-            },
-          })),
+        tool_calls: toolUseBlocks.map((tu) => ({
+          id: tu.id ?? "",
+          type: "function" as const,
+          function: {
+            name: tu.name ?? "",
+            arguments: JSON.stringify(tu.input ?? {}),
+          },
+        })),
       });
     } else if (textBlocks.length > 0 && toolUseBlocks.length === 0) {
       const textContent = extractTextContent(textBlocks as Array<{ type: string; text?: string }>);
@@ -144,16 +142,14 @@ function convertTools(
   tools?: Array<{ name: string; description?: string; input_schema: Record<string, unknown> }>,
 ): OpenAITool[] | undefined {
   if (!tools?.length) return undefined;
-  return tools
-    .filter((t) => t.name)
-    .map((t) => ({
-      type: "function" as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      },
-    }));
+  return tools.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
 }
 
 function buildOpenAIRequest(
@@ -243,7 +239,6 @@ function buildResponsesApiRequest(
     role: string;
     content: string | Array<{ type: string; [key: string]: unknown }>;
   }>;
-
   for (const msg of messages) {
     if (typeof msg.content === "string") {
       input.push({
@@ -262,7 +257,6 @@ function buildResponsesApiRequest(
           content: [{ type: "input_text", text: block.text }],
         });
       } else if (block.type === "tool_use") {
-        if (!block.name) continue;
         input.push({
           type: "function_call",
           call_id: block.id,
@@ -303,14 +297,12 @@ function buildResponsesApiRequest(
     | Array<{ name: string; description?: string; input_schema: Record<string, unknown> }>
     | undefined;
   if (tools?.length) {
-    req.tools = tools
-      .filter((t) => t.name)
-      .map((t) => ({
-        type: "function",
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      }));
+    req.tools = tools.map((t) => ({
+      type: "function",
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    }));
   }
 
   const effort = resolveEffort(body, route);
