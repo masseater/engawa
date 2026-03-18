@@ -2,15 +2,66 @@
 import { startServer } from "./index.js";
 import { loadConfig } from "./config.js";
 import { logInfo, logError } from "./logger.js";
+import { resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+
+function agentMarkdown(name: string, model: string, description: string): string {
+  return `---
+name: ${name}
+model: ${model}
+description: ${description}
+---
+
+You are a helpful assistant running as a subagent via engawa proxy. Complete the task given to you concisely and accurately.
+`;
+}
+
+async function init(cwd: string) {
+  const config = await loadConfig(cwd);
+  const agentsDir = resolve(cwd, ".claude", "agents");
+  await mkdir(agentsDir, { recursive: true });
+
+  const routes = Object.entries(config.routes).filter(
+    ([pattern, rc]) => !pattern.includes("*") && rc.provider !== "anthropic",
+  );
+
+  if (routes.length === 0) {
+    logInfo("No non-Anthropic routes found in config. Nothing to generate.");
+    return;
+  }
+
+  for (const [pattern, rc] of routes) {
+    const name = pattern.replace(/[^a-zA-Z0-9-]/g, "-");
+    const model = rc.model ?? pattern;
+    const filepath = resolve(agentsDir, `${name}.md`);
+    const file = Bun.file(filepath);
+
+    if (await file.exists()) {
+      logInfo(`  skip: ${name}.md (already exists)`);
+      continue;
+    }
+
+    const desc = `${model} subagent via engawa proxy.`;
+    await Bun.write(filepath, agentMarkdown(name, model, desc));
+    logInfo(`  created: ${name}.md → model: ${model}`);
+  }
+
+  logInfo("Done! Use subagent_type in Agent tool to invoke these models.");
+}
 
 async function main() {
+  const args = process.argv.slice(2);
+
+  if (args[0] === "init") {
+    logInfo("Generating agent definitions from engawa config...");
+    await init(process.cwd());
+    return;
+  }
+
   const config = await loadConfig();
   const port = config.port ?? 3131;
 
   const server = await startServer(config);
-
-  // Separate engawa flags from claude flags
-  const args = process.argv.slice(2);
 
   // Check if --no-claude flag is present (proxy-only mode)
   const noClaude = args.includes("--no-claude");
