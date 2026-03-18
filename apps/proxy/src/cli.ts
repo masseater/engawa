@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { startServer } from "./index.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, getConfigPath } from "./config.js";
 import { logInfo, logError } from "./logger.js";
 import { resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -16,9 +16,9 @@ You are a helpful assistant running as a subagent via engawa proxy. Complete the
 `;
 }
 
-async function init(cwd: string) {
-  const config = await loadConfig(cwd);
-  const agentsDir = resolve(cwd, ".claude", "agents");
+async function init() {
+  const config = await loadConfig();
+  const agentsDir = resolve(process.cwd(), ".claude", "agents");
   await mkdir(agentsDir, { recursive: true });
 
   const routes = Object.entries(config.routes).filter(
@@ -53,8 +53,9 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args[0] === "init") {
+    logInfo(`Config: ${getConfigPath()}/config.ts`);
     logInfo("Generating agent definitions from engawa config...");
-    await init(process.cwd());
+    await init();
     return;
   }
 

@@ -79,16 +79,16 @@ Agent tool → subagent_type: "gpt-5-4" → GPT-5.4 が応答
 
 ```ts
 interface RouteConfig {
-  provider: "anthropic" | "openai"
-  model?: string        // ルーティング先のモデル名
-  apiKey?: string       // 環境変数名 or 直接値
-  effort?: string       // OpenAI reasoning_effort (config固定)
+  provider: "anthropic" | "openai";
+  model?: string; // ルーティング先のモデル名
+  apiKey?: string; // 環境変数名 or 直接値
+  effort?: string; // OpenAI reasoning_effort (config固定)
 }
 
 interface EngawaConfig {
-  port?: number         // default: 3131
-  routes: Record<string, RouteConfig>
-  verbose?: boolean     // default: true
+  port?: number; // default: 3131
+  routes: Record<string, RouteConfig>;
+  verbose?: boolean; // default: true
 }
 ```
 
