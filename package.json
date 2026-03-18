@@ -1,0 +1,22 @@
+{
+  "name": "engawa-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "engawa": "workspace:*"
+  },
+  "devDependencies": {
+    "knip": "^5.88.0",
+    "oxfmt": "^0.41.0",
+    "oxlint": "^0.16.10",
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.2"
+  },
+  "packageManager": "pnpm@10.6.5"
+}

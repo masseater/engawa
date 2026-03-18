@@ -1,0 +1,11 @@
+{
+  "ignore": ["engawa.config.ts"],
+  "ignoreBinaries": ["oxfmt"],
+  "ignoreDependencies": ["engawa"],
+  "ignoreWorkspaces": ["packages/shared"],
+  "workspaces": {
+    "apps/proxy": {
+      "project": ["src/**/*.ts"]
+    }
+  }
+}
