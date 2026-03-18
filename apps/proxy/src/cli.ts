@@ -61,23 +61,14 @@ async function main() {
 
   const config = await loadConfig();
   const port = config.port ?? 3131;
-
-  // Check if --no-claude flag is present (proxy-only mode)
   const noClaude = args.includes("--no-claude");
-
-  // When launching with Claude Code, log to file to avoid corrupting its TUI
-  if (!noClaude) {
-    const runtimeDir =
-      process.env.XDG_RUNTIME_DIR ?? resolve(process.env.HOME ?? "~", ".local", "state");
-    setLogFile(resolve(runtimeDir, "engawa", "proxy.log"));
-  }
-
-  const server = await startServer(config);
   const claudeArgs = args.filter((a) => a !== "--no-claude");
+
+  // Setup logs go to console
+  const server = await startServer(config);
 
   if (noClaude) {
     logInfo("Running in proxy-only mode (no Claude process)");
-    // Keep running until interrupted
     process.on("SIGINT", () => {
       logInfo("Shutting down engawa proxy...");
       server.stop();
@@ -86,7 +77,6 @@ async function main() {
     return;
   }
 
-  // Pick first non-anthropic route as ANTHROPIC_CUSTOM_MODEL_OPTION (only supports single model)
   const customModels = Object.keys(config.routes)
     .filter((pattern) => !pattern.includes("*"))
     .filter((pattern) => config.routes[pattern]!.provider !== "anthropic");
@@ -99,6 +89,13 @@ async function main() {
     logInfo(`/model picker: ${customModelOption}`);
   }
 
+  // Switch to file logging before Claude takes over the terminal
+  const runtimeDir =
+    process.env.XDG_RUNTIME_DIR ?? resolve(process.env.HOME ?? "~", ".local", "state");
+  const logPath = resolve(runtimeDir, "engawa", "proxy.log");
+  setLogFile(logPath);
+  logInfo("--- session start ---");
+
   const claudeProc = Bun.spawn(["claude", ...claudeArgs], {
     env: {
       ...process.env,
@@ -108,8 +105,10 @@ async function main() {
     stdio: ["inherit", "inherit", "inherit"],
   });
 
-  // When claude exits, stop the proxy
   const exitCode = await claudeProc.exited;
+
+  // Back to console after Claude exits
+  setLogFile(null);
   logInfo(`Claude exited with code ${exitCode}, shutting down proxy...`);
   server.stop();
   process.exit(exitCode);

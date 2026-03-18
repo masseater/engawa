@@ -8,9 +8,11 @@ export function setVerbose(v: boolean) {
   verbose = v;
 }
 
-export function setLogFile(path: string) {
+export function setLogFile(path: string | null) {
   logFile = path;
-  mkdirSync(resolve(path, ".."), { recursive: true });
+  if (path) {
+    mkdirSync(resolve(path, ".."), { recursive: true });
+  }
 }
 
 function timestamp(): string {
