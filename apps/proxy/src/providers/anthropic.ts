@@ -12,6 +12,41 @@ const FORWARDED_HEADERS = [
   "content-type",
 ] as const;
 
+function buildHeaders(request: Request, route: ResolvedRoute): Headers {
+  const headers = new Headers();
+  for (const key of FORWARDED_HEADERS) {
+    const value = request.headers.get(key);
+    if (value) headers.set(key, value);
+  }
+  if (route.config.apiKey) {
+    const apiKey = route.config.apiKey.startsWith("sk-")
+      ? route.config.apiKey
+      : process.env[route.config.apiKey];
+    if (apiKey) headers.set("x-api-key", apiKey);
+  }
+  return headers;
+}
+
+function sanitizeBody(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
+  if (!messages) return body;
+
+  const cleaned = messages.map((msg) => {
+    if (!Array.isArray(msg.content)) return msg;
+    return {
+      ...msg,
+      content: (msg.content as Array<Record<string, unknown>>).filter(
+        (block) => block.type !== "tool_use" || block.name,
+      ),
+    };
+  });
+
+  const tools = body.tools as Array<Record<string, unknown>> | undefined;
+  const cleanedTools = tools?.filter((t) => t.name);
+
+  return { ...body, messages: cleaned, ...(tools ? { tools: cleanedTools } : {}) };
+}
+
 export async function handleAnthropicRequest(
   request: Request,
   body: Record<string, unknown>,
@@ -19,21 +54,8 @@ export async function handleAnthropicRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
   const targetUrl = `${ANTHROPIC_API_URL}${url.pathname}`;
-
-  const headers = new Headers();
-  for (const key of FORWARDED_HEADERS) {
-    const value = request.headers.get(key);
-    if (value) headers.set(key, value);
-  }
-
-  if (route.config.apiKey) {
-    const apiKey = route.config.apiKey.startsWith("sk-")
-      ? route.config.apiKey
-      : process.env[route.config.apiKey];
-    if (apiKey) headers.set("x-api-key", apiKey);
-  }
-
-  const outBody = { ...body, model: route.targetModel };
+  const headers = buildHeaders(request, route);
+  const outBody = sanitizeBody({ ...body, model: route.targetModel });
 
   try {
     const response = await fetch(targetUrl, {
@@ -74,21 +96,8 @@ export async function handleAnthropicCountTokens(
   route: ResolvedRoute,
 ): Promise<Response> {
   const targetUrl = `${ANTHROPIC_API_URL}/v1/messages/count_tokens`;
-
-  const headers = new Headers();
-  for (const key of FORWARDED_HEADERS) {
-    const value = request.headers.get(key);
-    if (value) headers.set(key, value);
-  }
-
-  if (route.config.apiKey) {
-    const apiKey = route.config.apiKey.startsWith("sk-")
-      ? route.config.apiKey
-      : process.env[route.config.apiKey];
-    if (apiKey) headers.set("x-api-key", apiKey);
-  }
-
-  const outBody = { ...body, model: route.targetModel };
+  const headers = buildHeaders(request, route);
+  const outBody = sanitizeBody({ ...body, model: route.targetModel });
 
   try {
     const response = await fetch(targetUrl, {
