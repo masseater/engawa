@@ -3,6 +3,7 @@ import { startServer } from "./index.js";
 import { loadConfig, getConfigPath, fileExists } from "./config.js";
 import { logInfo, logError, setLogFile } from "./logger.js";
 import { resolve } from "node:path";
+import { homedir } from "node:os";
 import { mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
@@ -50,9 +51,8 @@ async function init() {
 }
 
 function getLogPath(): string {
-  const runtimeDir = process.env.ENGAWA_HOME
-    ? process.env.ENGAWA_HOME
-    : (process.env.XDG_RUNTIME_DIR ?? resolve(process.env.HOME ?? "~", ".local", "state"));
+  const runtimeDir =
+    process.env.ENGAWA_HOME || process.env.XDG_RUNTIME_DIR || resolve(homedir(), ".local", "state");
   return resolve(runtimeDir, "engawa", "proxy.log");
 }
 
