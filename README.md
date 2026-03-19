@@ -138,6 +138,3 @@ engawa logs             # proxy ログを表示
 engawa logs -f          # proxy ログをフォロー
 ```
 
-## License
-
-MIT

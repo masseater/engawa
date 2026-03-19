@@ -2,7 +2,6 @@
   "name": "@r_masseater/engawa",
   "version": "0.1.0",
   "description": "Proxy server that lets Claude Code invoke OpenAI models as subagents",
-  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/masseater/engawa.git",
