@@ -29,14 +29,7 @@ interface OpenAITool {
 function convertSystemMessage(
   system: string | Array<{ type: string; text: string }> | undefined,
 ): OpenAIMessage | null {
-  if (!system) return null;
-  if (typeof system === "string") {
-    return { role: "developer", content: system };
-  }
-  const text = system
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  const text = extractSystemText(system);
   return text ? { role: "developer", content: text } : null;
 }
 
@@ -48,6 +41,31 @@ function extractTextContent(
     .filter((b) => b.type === "text")
     .map((b) => b.text ?? "")
     .join("");
+}
+
+function extractToolResultText(
+  content: string | Array<{ type: string; text?: string }> | undefined,
+): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
+  }
+  return "";
+}
+
+function extractSystemText(
+  system: string | Array<{ type: string; text: string }> | undefined,
+): string | undefined {
+  if (!system) return undefined;
+  if (typeof system === "string") return system;
+  const text = system
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+  return text || undefined;
 }
 
 export function convertFinishReason(reason: string | null): string {
@@ -98,17 +116,7 @@ function convertMessages(
     }
 
     for (const tr of toolResultBlocks) {
-      let content: string;
-      if (typeof tr.content === "string") {
-        content = tr.content;
-      } else if (Array.isArray(tr.content)) {
-        content = tr.content
-          .filter((b) => b.type === "text")
-          .map((b) => b.text ?? "")
-          .join("");
-      } else {
-        content = "";
-      }
+      let content = extractToolResultText(tr.content);
       if (tr.is_error) content = `[Error] ${content}`;
       result.push({ role: "tool", tool_call_id: tr.tool_use_id ?? "", content });
     }
@@ -198,16 +206,9 @@ export function buildResponsesApiRequest(
 ): Record<string, unknown> {
   const input: Array<Record<string, unknown>> = [];
 
-  let instructions: string | undefined;
-  const system = body.system as string | Array<{ type: string; text: string }> | undefined;
-  if (typeof system === "string") {
-    instructions = system;
-  } else if (Array.isArray(system)) {
-    instructions = system
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
-  }
+  const instructions = extractSystemText(
+    body.system as string | Array<{ type: string; text: string }> | undefined,
+  );
 
   const messages = body.messages as Array<{
     role: string;
@@ -241,15 +242,9 @@ export function buildResponsesApiRequest(
           arguments: JSON.stringify(block.input ?? {}),
         });
       } else if (block.type === "tool_result") {
-        const resultContent =
-          typeof block.content === "string"
-            ? block.content
-            : Array.isArray(block.content)
-              ? (block.content as Array<{ type: string; text?: string }>)
-                  .filter((b) => b.type === "text")
-                  .map((b) => b.text ?? "")
-                  .join("")
-              : "";
+        const resultContent = extractToolResultText(
+          block.content as string | Array<{ type: string; text?: string }> | undefined,
+        );
         input.push({
           type: "function_call_output",
           call_id: block.tool_use_id,

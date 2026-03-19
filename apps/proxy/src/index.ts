@@ -20,15 +20,8 @@ const providers: Record<string, ProviderHandler> = {
 export { defineConfig } from "./config.js";
 export type { EngawaConfig, RouteConfig } from "./types.js";
 
-type Env = { Variables: { config: EngawaConfig } };
-
 function createApp(config: EngawaConfig) {
-  const app = new Hono<Env>();
-
-  app.use("*", async (c, next) => {
-    c.set("config", config);
-    await next();
-  });
+  const app = new Hono();
 
   function resolveAndGuard(
     body: Record<string, unknown>,

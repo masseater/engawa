@@ -6,32 +6,18 @@
 import { startServer } from "./index.js";
 import { loadConfig } from "./config.js";
 
-const ANTHROPIC_REQUEST = {
-  model: "gpt-5.4",
-  system: "You are a helpful assistant. Reply in one short sentence.",
-  messages: [
-    { role: "user", content: "Say hello." },
-  ],
-  max_tokens: 256,
-  stream: false,
-};
+let MODEL = "gpt-5.4";
 
-const ANTHROPIC_MULTI_TURN = {
-  model: "gpt-5.4",
-  system: "Reply in one word.",
-  messages: [
-    { role: "user", content: "Say hello." },
-    { role: "assistant", content: [{ type: "text", text: "Hello!" }] },
-    { role: "user", content: "Now say goodbye." },
-  ],
-  max_tokens: 256,
-  stream: false,
-};
-
-const ANTHROPIC_STREAMING = {
-  ...ANTHROPIC_REQUEST,
-  stream: true,
-};
+function makeRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    model: MODEL,
+    system: "You are a helpful assistant. Reply in one short sentence.",
+    messages: [{ role: "user", content: "Say hello." }],
+    max_tokens: 256,
+    stream: false,
+    ...overrides,
+  };
+}
 
 function ok(label: string) {
   console.log(`  ✔ ${label}`);
@@ -67,7 +53,7 @@ async function testNonStreaming(proxyUrl: string) {
   const res = await fetch(`${proxyUrl}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(ANTHROPIC_REQUEST),
+    body: JSON.stringify(makeRequest()),
   });
 
   if (!res.ok) {
@@ -102,7 +88,14 @@ async function testMultiTurn(proxyUrl: string) {
   const res = await fetch(`${proxyUrl}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(ANTHROPIC_MULTI_TURN),
+    body: JSON.stringify(makeRequest({
+      system: "Reply in one word.",
+      messages: [
+        { role: "user", content: "Say hello." },
+        { role: "assistant", content: [{ type: "text", text: "Hello!" }] },
+        { role: "user", content: "Now say goodbye." },
+      ],
+    })),
   });
 
   if (!res.ok) {
@@ -124,7 +117,7 @@ async function testStreaming(proxyUrl: string) {
   const res = await fetch(`${proxyUrl}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(ANTHROPIC_STREAMING),
+    body: JSON.stringify(makeRequest({ stream: true })),
   });
 
   if (!res.ok) {
@@ -159,7 +152,7 @@ async function testToolUse(proxyUrl: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-5.4",
+      model: MODEL,
       system: "Use the get_weather tool to answer weather questions.",
       messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
       max_tokens: 512,
@@ -204,7 +197,7 @@ async function testToolUse(proxyUrl: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-5.4",
+      model: MODEL,
       system: "Use the get_weather tool to answer weather questions.",
       messages: [
         { role: "user", content: "What's the weather in Tokyo?" },
@@ -257,7 +250,7 @@ async function testThinking(proxyUrl: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-5.4",
+      model: MODEL,
       system: "Reply in one sentence.",
       messages: [{ role: "user", content: "What is 2+2?" }],
       max_tokens: 1024,
@@ -294,7 +287,7 @@ async function testStreamingToolUse(proxyUrl: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "gpt-5.4",
+      model: MODEL,
       system: "Always use the get_time tool. Do not respond with text.",
       messages: [{ role: "user", content: "What time is it?" }],
       max_tokens: 512,
@@ -347,6 +340,7 @@ async function main() {
     console.error("No OpenAI route in config. Add one to engawa.config.ts.");
     process.exit(1);
   }
+  MODEL = route[0];
 
   console.log("Starting proxy...");
   const server = await startServer({ ...config, verbose: true });

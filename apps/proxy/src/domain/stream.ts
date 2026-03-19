@@ -38,10 +38,10 @@ export function createStreamState(model: string): StreamState {
   };
 }
 
-function emitMessageStart(state: StreamState): string[] {
-  if (state.started) return [];
+function emitMessageStart(state: StreamState, events: string[]): void {
+  if (state.started) return;
   state.started = true;
-  return [
+  events.push(
     sseEvent("message_start", {
       type: "message_start",
       message: {
@@ -55,7 +55,7 @@ function emitMessageStart(state: StreamState): string[] {
         usage: { input_tokens: 0, output_tokens: 0 },
       },
     }),
-  ];
+  );
 }
 
 // ─── Chat Completions Chunk Processor ───────────────────────────────
@@ -64,7 +64,8 @@ export function processChatCompletionsChunk(
   chunk: Record<string, unknown>,
   state: StreamState,
 ): string[] {
-  const events: string[] = [...emitMessageStart(state)];
+  const events: string[] = [];
+  emitMessageStart(state, events);
 
   const choices = chunk.choices as Array<Record<string, unknown>> | undefined;
   if (!choices?.length) {
@@ -203,7 +204,8 @@ export function processResponsesApiChunk(
   chunk: Record<string, unknown>,
   state: StreamState,
 ): string[] {
-  const events: string[] = [...emitMessageStart(state)];
+  const events: string[] = [];
+  emitMessageStart(state, events);
   const type = chunk.type as string;
 
   if (type === "response.output_text.delta") {

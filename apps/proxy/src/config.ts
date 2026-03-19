@@ -81,6 +81,8 @@ async function tryLoadLocal(startDir: string): Promise<EngawaConfig | null> {
       logInfo(`Loading config: ${filepath}`);
       return loadConfigFile(filepath);
     }
+    // Stop at repository root
+    if (await fileExists(resolve(dir, ".git"))) break;
     dir = resolve(dir, "..");
   }
   return null;
