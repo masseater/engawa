@@ -77,8 +77,59 @@ mockApp.post("/v1/chat/completions", async (c) => {
   });
 });
 
+// Mock Anthropic API
+const mockAnthropicApp = new Hono();
+
+mockAnthropicApp.post("/v1/messages", async (c) => {
+  const body = (await c.req.json()) as Record<string, unknown>;
+  if (body.stream) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], model: body.model, stop_reason: null, usage: { input_tokens: 5, output_tokens: 0 } } })}\n\n`,
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`,
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Anthropic hello" } })}\n\n`,
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+          ),
+        );
+        controller.close();
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  }
+  return c.json({
+    id: "msg_test",
+    type: "message",
+    role: "assistant",
+    content: [{ type: "text", text: "Hello from Anthropic mock!" }],
+    model: body.model,
+    stop_reason: "end_turn",
+    usage: { input_tokens: 5, output_tokens: 3 },
+  });
+});
+
+mockAnthropicApp.post("/v1/messages/count_tokens", async (c) => {
+  return c.json({ input_tokens: 42 });
+});
+
 let mockOpenAI: ServerType;
 let mockUrl: string;
+let mockAnthropicServer: ServerType;
+let mockAnthropicUrl: string;
 let proxy: { port: number; stop: () => void };
 let proxyUrl: string;
 const originalFetch = globalThis.fetch;
@@ -92,13 +143,25 @@ beforeAll(async () => {
     });
   });
 
-  // Intercept fetch to redirect OpenAI API calls to mock
+  // Start mock Anthropic server
+  await new Promise<void>((resolve) => {
+    mockAnthropicServer = serve({ fetch: mockAnthropicApp.fetch, port: 0 }, (info) => {
+      mockAnthropicUrl = `http://localhost:${info.port}`;
+      resolve();
+    });
+  });
+
+  // Intercept fetch to redirect API calls to mocks
   Object.defineProperty(globalThis, "fetch", {
     value: (input: string | URL | Request, init?: RequestInit) => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.startsWith("https://api.openai.com/")) {
         const newUrl = url.replace("https://api.openai.com", mockUrl);
+        return originalFetch(newUrl, init);
+      }
+      if (url.startsWith("https://api.anthropic.com/")) {
+        const newUrl = url.replace("https://api.anthropic.com", mockAnthropicUrl);
         return originalFetch(newUrl, init);
       }
       return originalFetch(input, init);
@@ -113,6 +176,7 @@ beforeAll(async () => {
     port: 0,
     verbose: false,
     routes: {
+      "claude-*": { provider: "anthropic" },
       "gpt-5.4": { provider: "openai", model: "gpt-5.4", effort: "medium" },
       "gpt-5.4-mini": { provider: "openai", model: "gpt-5.4-mini" },
     },
@@ -123,6 +187,7 @@ beforeAll(async () => {
 afterAll(() => {
   proxy.stop();
   mockOpenAI.close();
+  mockAnthropicServer.close();
   Object.defineProperty(globalThis, "fetch", {
     value: originalFetch,
     writable: true,
@@ -238,6 +303,85 @@ function parseSSE(text: string): SSEEvent[] {
       };
     });
 }
+
+describe("proxy - error handling", () => {
+  test("returns 400 when model field is missing", async () => {
+    const res = await post("/v1/messages", {
+      messages: [{ role: "user", content: "Hi" }],
+      max_tokens: 100,
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.message).toContain("model");
+  });
+
+  test("count_tokens returns 400 for OpenAI models", async () => {
+    const res = await fetch(`${proxyUrl}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.4",
+        messages: [{ role: "user", content: "Hi" }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.message).toContain("not supported");
+  });
+});
+
+describe("proxy - health", () => {
+  test("GET /health returns ok", async () => {
+    const res = await fetch(`${proxyUrl}/health`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("ok");
+  });
+});
+
+describe("proxy - anthropic passthrough", () => {
+  test("forwards request to Anthropic API and returns response", async () => {
+    const res = await post("/v1/messages", {
+      model: "claude-opus-4-20250514",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 100,
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.type).toBe("message");
+    expect(body.content[0].text).toBe("Hello from Anthropic mock!");
+  });
+
+  test("streams Anthropic response as passthrough", async () => {
+    const res = await post("/v1/messages", {
+      model: "claude-opus-4-20250514",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 100,
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    const text = await res.text();
+    expect(text).toContain("message_start");
+    expect(text).toContain("Anthropic hello");
+  });
+
+  test("count_tokens passes through to Anthropic", async () => {
+    const res = await fetch(`${proxyUrl}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-opus-4-20250514",
+        messages: [{ role: "user", content: "Hi" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.input_tokens).toBe(42);
+  });
+});
 
 describe("proxy - streaming", () => {
   test("converts streaming response to Anthropic SSE", async () => {

@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **pnpm** (package manager, version 10.6.5) — all commands go through pnpm + Turborepo
 - **Node.js** (runtime)
+- **tsgo** — TypeScript Go compiler, used for `typecheck`
 - OpenAI credentials: set the OpenAI env var, or authenticate via Codex CLI (`codex login`)
 
 ## Commands
@@ -35,6 +36,12 @@ pnpm format:check                      # check formatting without modifying
 
 # Dead code detection
 pnpm --filter engawa knip
+
+# Proxy-specific commands (from apps/proxy)
+pnpm --filter engawa dev              # proxy-only mode (tsx src/cli.ts --no-claude)
+pnpm --filter engawa e2e              # E2E smoke test against real OpenAI
+pnpm --filter engawa logs             # tail proxy log file (-f follow)
+pnpm --filter engawa gen:agents       # generate .claude/agents/ from config routes
 ```
 
 ## Architecture
@@ -43,14 +50,13 @@ pnpm --filter engawa knip
 
 ### Monorepo Structure (pnpm workspaces + Turborepo)
 
-- **`apps/proxy`** — The main `engawa` npm package (published to npm). Contains CLI, Hono HTTP server, and all conversion logic.
-- **`packages/shared`** — Shared TypeScript types (`EngawaConfig`, `RouteConfig`, Anthropic request/response types). Re-exports only.
+- **`apps/proxy`** — The main `engawa` npm package (published to npm). Contains CLI, Hono HTTP server, and all conversion logic. Types (`EngawaConfig`, `RouteConfig`) are defined in `apps/proxy/src/types.ts`.
 
 ### Proxy Request Flow
 
 ```
 Claude Code -> POST /v1/messages -> engawa (Hono)
-  1. resolveRoute(): match model ID against config patterns (glob with trailing *)
+  1. resolveRoute(): match model ID against config patterns (exact match or prefix with trailing *)
   2. sanitizeBody(): strip tool_use blocks with empty names + orphan tool_results
   3. dispatch() -> provider handler:
      - anthropic: passthrough (forward headers + body to api.anthropic.com)
@@ -66,7 +72,8 @@ The code is being refactored into domain/infra layers. Current state:
 | `domain/convert.ts`      | Domain   | Pure Anthropic-to-OpenAI conversion (Chat Completions + Responses API) | Canonical               |
 | `domain/stream.ts`       | Domain   | SSE stream state machine and chunk processors                          | Canonical               |
 | `infra/auth.ts`          | Infra    | OpenAI auth resolution (env var, config, Codex CLI)                    | Canonical               |
-| `providers/openai.ts`    | Provider | OpenAI handler — **contains duplicate conversion logic**               | Legacy, being extracted |
+| `providers/openai.ts`    | Provider | OpenAI handler — orchestrates calls to domain/convert and domain/stream | Stable                  |
+| `e2e.ts`                 | Core     | E2E smoke test against real OpenAI (`pnpm --filter engawa e2e`)        | Stable                  |
 | `providers/anthropic.ts` | Provider | Anthropic passthrough                                                  | Stable                  |
 | `router.ts`              | Core     | Model ID pattern matching                                              | Stable                  |
 | `sanitize.ts`            | Core     | Request body cleanup (empty-name tools)                                | Stable                  |
@@ -88,20 +95,20 @@ The proxy uses different OpenAI APIs depending on auth source:
 
 - **Node.js runtime** — uses `@hono/node-server` for HTTP, `node:fs/promises` for file I/O, `node:child_process` for process spawning. Uses `tsx` for dev mode.
 - **Streaming conversion** — OpenAI SSE chunks are converted to Anthropic SSE format via a `StreamState` state machine that tracks content blocks, tool calls, and indices
-- **Config loading** — searches `$XDG_CONFIG_HOME/engawa/config.ts` (default: `$HOME/.config/engawa/config.ts`), falls back to anthropic-passthrough-only config
+- **Config loading** — 1) searches `engawa.config.ts` walking up from CWD to `.git` root, 2) then `$XDG_CONFIG_HOME/engawa/config.ts` (or `$ENGAWA_HOME`), 3) creates default config with both `claude-*` (anthropic) and `gpt-5.4` (openai) routes
 - **CLI dual mode** — `engawa` spawns both the proxy and Claude Code process; `engawa --no-claude` runs proxy only
 - **Error responses** — always return Anthropic error format (`{ type: "error", error: { type, message } }`) regardless of upstream provider
 
 ## Development Guidelines
 
-### DDD Refactoring (in progress)
+### DDD Layer Structure
 
-`providers/openai.ts` still contains legacy conversion logic that duplicates `domain/convert.ts` and `domain/stream.ts`. When writing new code:
+Code is organized into domain/infra layers:
 
 - **Pure conversion logic** -> `domain/convert.ts`
 - **Stream processing** -> `domain/stream.ts`
 - **Auth/external I/O** -> `infra/auth.ts`
-- Add new logic to the appropriate domain/infra module; `providers/openai.ts` should only orchestrate calls to those modules
+- **Provider orchestration** -> `providers/openai.ts`, `providers/anthropic.ts` — these should only orchestrate calls to domain/infra modules
 
 ### Testing
 
@@ -117,19 +124,21 @@ pnpm --filter engawa test -- src/router.test.ts  # single file
 - `proxy.test.ts` — integration test: starts real proxy + mock OpenAI server on random ports (`port: 0`), intercepts `globalThis.fetch` to redirect API calls to mock
 - `router.test.ts` — unit test: tests `resolveRoute()` with in-memory config
 - `errors.test.ts` — unit test: tests error type mapping and response format
+- `config.test.ts` — unit test: tests config file loading and resolution
+- `domain/convert.test.ts` — unit test: tests Anthropic-to-OpenAI request/response conversion
+- `domain/stream.test.ts` — unit test: tests SSE stream processing and chunk conversion
 
 ### Code Style
 
-- Linter: **oxlint** (config: `oxlint.json`) — `eqeqeq` error, `no-console` off
-- Formatter: **oxfmt** (config: `.oxfmtrc`) — indent 2, line width 100
+- Linter: **oxlint** (config: `packages/oxc-config/oxlint.json`) — `eqeqeq` error, `no-console` off
+- Formatter: **oxfmt** (config: `packages/oxc-config/.oxfmtrc`) — indent 2, line width 100
 - TypeScript strict mode with `noUncheckedIndexedAccess` and `verbatimModuleSyntax`
 - Use `type` imports (`import type { ... }`) for type-only imports
 
 ## Gotchas
 
 - **`engawa.config.ts` at repo root** is for local development only (imports from `engawa` workspace package). It is ignored by knip.
-- **Logging switches to file** when Claude Code is launched (`cli.ts`): during a Claude session, proxy logs go to `$XDG_RUNTIME_DIR/engawa/proxy.log` (or `$HOME/.local/state/engawa/proxy.log`), not stdout.
-- **`packages/shared` is ignored by knip** — types are shared but the package has no runtime code.
+- **Logging switches to file** when Claude Code is launched (`cli.ts`): during a Claude session, proxy logs go to `$ENGAWA_HOME/proxy.log`, `$XDG_RUNTIME_DIR/engawa/proxy.log`, or `$HOME/.local/state/engawa/proxy.log`, not stdout.
 - **Responses API path** (Codex OAuth) does not support `temperature`, `top_p`, or `max_output_tokens` — these params are silently dropped.
 - **Route pattern order matters** — `resolveRoute()` iterates config entries in insertion order and returns the first match.
 

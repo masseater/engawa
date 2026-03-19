@@ -28,6 +28,20 @@ describe("toAnthropicError", () => {
   test("maps 500 to api_error", () => {
     expect(toAnthropicError(500, "x").error.type).toBe("api_error");
   });
+
+  test("maps 403 to permission_error", () => {
+    expect(toAnthropicError(403, "x").error.type).toBe("permission_error");
+  });
+
+  test("maps 404 to not_found_error", () => {
+    expect(toAnthropicError(404, "x").error.type).toBe("not_found_error");
+  });
+
+  test("preserves message in error body", () => {
+    const err = toAnthropicError(400, "detailed error message");
+    expect(err.type).toBe("error");
+    expect(err.error.message).toBe("detailed error message");
+  });
 });
 
 describe("errorResponse", () => {

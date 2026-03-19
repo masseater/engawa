@@ -462,6 +462,66 @@ describe("convertChatCompletionsResponse", () => {
     expect(usage.input_tokens).toBe(0);
     expect(usage.output_tokens).toBe(0);
   });
+
+  test("text + tool_calls in same response", () => {
+    const res = convertChatCompletionsResponse(
+      {
+        choices: [
+          {
+            message: {
+              content: "Let me check",
+              tool_calls: [{ id: "c1", function: { name: "fn", arguments: '{"a":1}' } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      },
+      "gpt-5.4",
+    );
+    const content = res.content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(2);
+    expect(content[0]!.type).toBe("text");
+    expect(content[0]!.text).toBe("Let me check");
+    expect(content[1]!.type).toBe("tool_use");
+    expect(res.stop_reason).toBe("tool_use");
+  });
+
+  test("multiple tool_calls in response", () => {
+    const res = convertChatCompletionsResponse(
+      {
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                { id: "c1", function: { name: "fn1", arguments: '{"a":1}' } },
+                { id: "c2", function: { name: "fn2", arguments: '{"b":2}' } },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 10 },
+      },
+      "gpt-5.4",
+    );
+    const content = res.content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(2);
+    expect(content[0]!.name).toBe("fn1");
+    expect(content[1]!.name).toBe("fn2");
+  });
+
+  test("model field is passed through in response", () => {
+    const res = convertChatCompletionsResponse(
+      {
+        choices: [{ message: { content: "Hi" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      },
+      "custom-model",
+    );
+    expect(res.model).toBe("custom-model");
+  });
 });
 
 describe("convertResponsesApiResponse", () => {
@@ -510,5 +570,39 @@ describe("convertResponsesApiResponse", () => {
       "gpt-5.4",
     );
     expect(res.content as Array<unknown>).toHaveLength(0);
+  });
+
+  test("text + function_call output → text + tool_use", () => {
+    const res = convertResponsesApiResponse(
+      {
+        output: [
+          { type: "message", content: [{ type: "output_text", text: "Checking..." }] },
+          { type: "function_call", call_id: "c1", name: "fn", arguments: '{"x":1}' },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+      "gpt-5.4",
+    );
+    const content = res.content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(2);
+    expect(content[0]!.type).toBe("text");
+    expect(content[1]!.type).toBe("tool_use");
+    // tool_use presence overrides end_turn
+    expect(res.stop_reason).toBe("tool_use");
+  });
+
+  test("no usage returns zeros", () => {
+    const res = convertResponsesApiResponse({ output: [] }, "gpt-5.4");
+    const usage = res.usage as { input_tokens: number; output_tokens: number };
+    expect(usage.input_tokens).toBe(0);
+    expect(usage.output_tokens).toBe(0);
+  });
+
+  test("model field is passed through", () => {
+    const res = convertResponsesApiResponse(
+      { output: [], usage: { input_tokens: 0, output_tokens: 0 } },
+      "custom-model",
+    );
+    expect(res.model).toBe("custom-model");
   });
 });

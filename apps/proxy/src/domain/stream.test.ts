@@ -145,6 +145,63 @@ describe("processChatCompletionsChunk", () => {
     expect((messageDelta!.data.delta as Record<string, string>).stop_reason).toBe("end_turn");
   });
 
+  test("finish_reason closes open tool blocks", () => {
+    const state = createStreamState("gpt-5.4");
+    state.started = true;
+    // Open a tool block
+    processChatCompletionsChunk(
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [{ index: 0, id: "c1", function: { name: "fn", arguments: "{}" } }],
+            },
+            finish_reason: null,
+          },
+        ],
+      },
+      state,
+    );
+    expect(state.openToolBlocks.size).toBe(1);
+
+    // finish_reason should close the tool block
+    const events = processChatCompletionsChunk(
+      {
+        choices: [{ delta: {}, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      },
+      state,
+    );
+    const parsed = parseEvents(events);
+    expect(parsed.some((e) => e.event === "content_block_stop")).toBe(true);
+    expect(state.openToolBlocks.size).toBe(0);
+    const messageDelta = parsed.find((e) => e.event === "message_delta");
+    expect((messageDelta!.data.delta as Record<string, string>).stop_reason).toBe("tool_use");
+  });
+
+  test("finish_reason closes open text block", () => {
+    const state = createStreamState("gpt-5.4");
+    state.started = true;
+    // Open a text block
+    processChatCompletionsChunk(
+      { choices: [{ delta: { content: "hello" }, finish_reason: null }] },
+      state,
+    );
+    expect(state.currentTextBlockOpen).toBe(true);
+
+    const events = processChatCompletionsChunk(
+      {
+        choices: [{ delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      },
+      state,
+    );
+    const parsed = parseEvents(events);
+    const stops = parsed.filter((e) => e.event === "content_block_stop");
+    expect(stops.length).toBeGreaterThanOrEqual(1);
+    expect(state.currentTextBlockOpen).toBe(false);
+  });
+
   test("usage-only chunk (no choices) captures token counts", () => {
     const state = createStreamState("gpt-5.4");
     state.started = true;
@@ -239,6 +296,14 @@ describe("processResponsesApiChunk", () => {
     expect(state.inputTokens).toBe(20);
   });
 
+  test("unrecognized event type emits only message_start", () => {
+    const state = createStreamState("gpt-5.4");
+    const events = processResponsesApiChunk({ type: "response.some_unknown_event" }, state);
+    const parsed = parseEvents(events);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.event).toBe("message_start");
+  });
+
   test("response.completed with function_call → tool_use stop_reason", () => {
     const state = createStreamState("gpt-5.4");
     state.started = true;
@@ -328,6 +393,23 @@ describe("collectResponsesStream", () => {
     const result = await collectResponsesStream(inputStream);
     expect(result).not.toBeNull();
     expect(result!.output).toBeDefined();
+  });
+
+  test("handles multiple data lines in single chunk", async () => {
+    const encoder = new TextEncoder();
+    const inputStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"response.output_text.delta","delta":"A"}\ndata: {"type":"response.output_text.delta","delta":"B"}\ndata: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":5}}}\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    const result = await collectResponsesStream(inputStream);
+    expect(result).not.toBeNull();
   });
 
   test("returns null if no response.completed", async () => {
