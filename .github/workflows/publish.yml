@@ -36,7 +36,7 @@ jobs:
         id: check
         run: |
           PKG_VERSION=$(node -p "require('./apps/proxy/package.json').version")
-          if npm view engawa@$PKG_VERSION version 2>/dev/null; then
+          if npm view @r_masseater/engawa@$PKG_VERSION version 2>/dev/null; then
             echo "skip=true" >> $GITHUB_OUTPUT
           else
             echo "skip=false" >> $GITHUB_OUTPUT
