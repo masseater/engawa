@@ -19,6 +19,7 @@ export interface StreamState {
   inputTokens: number;
   outputTokens: number;
   stopped: boolean;
+  responseId: string | null;
 }
 
 export function createStreamState(model: string): StreamState {
@@ -33,6 +34,7 @@ export function createStreamState(model: string): StreamState {
     inputTokens: 0,
     outputTokens: 0,
     stopped: false,
+    responseId: null,
   };
 }
 
@@ -282,6 +284,7 @@ export function processResponsesApiChunk(
     state.openToolBlocks.clear();
   } else if (type === "response.completed") {
     const response = chunk.response as Record<string, unknown> | undefined;
+    if (typeof response?.id === "string") state.responseId = response.id;
     const usage = response?.usage as Record<string, number> | undefined;
     if (usage) {
       state.inputTokens = usage.input_tokens ?? 0;
@@ -302,4 +305,89 @@ export function processResponsesApiChunk(
   }
 
   return events;
+}
+
+// ─── SSE Stream Adapter ─────────────────────────────────────────────
+
+export function createSSEStream(
+  responseBody: ReadableStream<Uint8Array>,
+  state: StreamState,
+  chunkProcessor: (chunk: Record<string, unknown>, state: StreamState) => string[],
+  onComplete?: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = responseBody.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = "";
+
+  function closeStream(controller: ReadableStreamDefaultController<Uint8Array>) {
+    if (!state.stopped) {
+      controller.enqueue(encoder.encode(sseEvent("message_stop", { type: "message_stop" })));
+    }
+    onComplete?.();
+    controller.close();
+  }
+
+  return new ReadableStream({
+    async pull(controller) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          closeStream(controller);
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(":")) continue;
+          if (!trimmed.startsWith("data: ")) continue;
+
+          const dataStr = trimmed.slice(6);
+          if (dataStr === "[DONE]") {
+            closeStream(controller);
+            return;
+          }
+
+          const chunk = JSON.parse(dataStr) as Record<string, unknown>;
+          const events = chunkProcessor(chunk, state);
+          for (const event of events) {
+            controller.enqueue(encoder.encode(event));
+          }
+        }
+      }
+    },
+  });
+}
+
+// ─── Responses API Stream Collector (for non-streaming mode) ────────
+
+export async function collectResponsesStream(
+  body: ReadableStream<Uint8Array>,
+): Promise<Record<string, unknown> | null> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(decoder.decode(value, { stream: true }));
+  }
+
+  const buffer = chunks.join("");
+  for (const block of buffer.split("\n")) {
+    const trimmed = block.trim();
+    if (!trimmed.startsWith("data: ")) continue;
+    const dataStr = trimmed.slice(6);
+    if (dataStr === "[DONE]") continue;
+    const chunk = JSON.parse(dataStr) as Record<string, unknown>;
+    if (chunk.type === "response.completed") {
+      return chunk.response as Record<string, unknown>;
+    }
+  }
+  return null;
 }

@@ -1,7 +1,7 @@
 {
   "ignore": ["engawa.config.ts"],
-  "ignoreBinaries": ["oxfmt"],
-  "ignoreDependencies": ["engawa"],
+  "ignoreBinaries": ["oxfmt", "oxlint", "tsgo", "knip"],
+  "ignoreDependencies": ["engawa", "@engawa/typescript-config"],
   "ignoreWorkspaces": ["packages/shared"],
   "workspaces": {
     "apps/proxy": {

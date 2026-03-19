@@ -2,20 +2,20 @@ import type { ResolvedRoute } from "../types.js";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-export interface OpenAIMessage {
+interface OpenAIMessage {
   role: "system" | "developer" | "user" | "assistant" | "tool";
   content?: string | null | Array<{ type: string; text?: string; [key: string]: unknown }>;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
 }
 
-export interface OpenAIToolCall {
+interface OpenAIToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
 }
 
-export interface OpenAITool {
+interface OpenAITool {
   type: "function";
   function: {
     name: string;
@@ -215,11 +215,13 @@ export function buildResponsesApiRequest(
   }>;
 
   for (const msg of messages) {
+    const textType = msg.role === "assistant" ? "output_text" : "input_text";
+
     if (typeof msg.content === "string") {
       input.push({
         type: "message",
         role: msg.role,
-        content: [{ type: "input_text", text: msg.content }],
+        content: [{ type: textType, text: msg.content }],
       });
       continue;
     }
@@ -229,7 +231,7 @@ export function buildResponsesApiRequest(
         input.push({
           type: "message",
           role: msg.role,
-          content: [{ type: "input_text", text: block.text }],
+          content: [{ type: textType, text: block.text }],
         });
       } else if (block.type === "tool_use") {
         input.push({

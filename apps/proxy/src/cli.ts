@@ -1,9 +1,10 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { startServer } from "./index.js";
-import { loadConfig, getConfigPath } from "./config.js";
+import { loadConfig, getConfigPath, fileExists } from "./config.js";
 import { logInfo, logError, setLogFile } from "./logger.js";
 import { resolve } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 
 function agentMarkdown(name: string, model: string, description: string): string {
   return `---
@@ -34,19 +35,25 @@ async function init() {
     const name = pattern.replace(/[^a-zA-Z0-9-]/g, "-");
     const model = rc.model ?? pattern;
     const filepath = resolve(agentsDir, `${name}.md`);
-    const file = Bun.file(filepath);
 
-    if (await file.exists()) {
+    if (await fileExists(filepath)) {
       logInfo(`  skip: ${name}.md (already exists)`);
       continue;
     }
 
     const desc = `${model} subagent via engawa proxy.`;
-    await Bun.write(filepath, agentMarkdown(name, model, desc));
+    await writeFile(filepath, agentMarkdown(name, model, desc));
     logInfo(`  created: ${name}.md → model: ${model}`);
   }
 
   logInfo("Done! Use subagent_type in Agent tool to invoke these models.");
+}
+
+function getLogPath(): string {
+  const runtimeDir = process.env.ENGAWA_HOME
+    ? process.env.ENGAWA_HOME
+    : (process.env.XDG_RUNTIME_DIR ?? resolve(process.env.HOME ?? "~", ".local", "state"));
+  return resolve(runtimeDir, "engawa", "proxy.log");
 }
 
 async function main() {
@@ -59,8 +66,16 @@ async function main() {
     return;
   }
 
+  if (args[0] === "logs") {
+    const logPath = getLogPath();
+    const follow = args.includes("-f") || args.includes("--follow");
+    const tailArgs = follow ? ["-f", "-n", "100", logPath] : ["-n", "200", logPath];
+    const tail = spawn("tail", tailArgs, { stdio: "inherit" });
+    tail.on("close", (code) => process.exit(code ?? 0));
+    return;
+  }
+
   const config = await loadConfig();
-  const port = config.port ?? 3131;
   const noClaude = args.includes("--no-claude");
   const claudeArgs = args.filter((a) => a !== "--no-claude");
 
@@ -83,29 +98,29 @@ async function main() {
 
   const customModelOption = customModels[0];
 
-  logInfo(`Launching claude with ANTHROPIC_BASE_URL=http://localhost:${port}`);
+  logInfo(`Launching claude with ANTHROPIC_BASE_URL=http://localhost:${server.port}`);
   if (customModels.length > 0) {
     logInfo(`Available models via proxy: ${customModels.join(", ")}`);
-    logInfo(`/model picker: ${customModelOption}`);
+    logInfo(`ANTHROPIC_CUSTOM_MODEL_OPTION=${customModelOption}`);
   }
 
   // Switch to file logging before Claude takes over the terminal
-  const runtimeDir =
-    process.env.XDG_RUNTIME_DIR ?? resolve(process.env.HOME ?? "~", ".local", "state");
-  const logPath = resolve(runtimeDir, "engawa", "proxy.log");
+  const logPath = getLogPath();
   setLogFile(logPath);
   logInfo("--- session start ---");
 
-  const claudeProc = Bun.spawn(["claude", ...claudeArgs], {
+  const claudeProc = spawn("claude", claudeArgs, {
     env: {
       ...process.env,
-      ANTHROPIC_BASE_URL: `http://localhost:${port}`,
+      ANTHROPIC_BASE_URL: `http://localhost:${server.port}`,
       ...(customModelOption ? { ANTHROPIC_CUSTOM_MODEL_OPTION: customModelOption } : {}),
     },
-    stdio: ["inherit", "inherit", "inherit"],
+    stdio: "inherit",
   });
 
-  const exitCode = await claudeProc.exited;
+  const exitCode = await new Promise<number>((resolve) => {
+    claudeProc.on("close", (code) => resolve(code ?? 1));
+  });
 
   // Back to console after Claude exits
   setLogFile(null);

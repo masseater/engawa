@@ -1,9 +1,9 @@
 {
-  "extends": "../../tsconfig.json",
+  "extends": "@engawa/typescript-config/base.json",
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "types": ["bun-types"]
+    "types": ["node"]
   },
   "include": ["src"]
 }

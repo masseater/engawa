@@ -1,5 +1,7 @@
-import { describe, expect, test, afterAll, beforeAll } from "bun:test";
+import { describe, expect, test, afterAll, beforeAll } from "vitest";
 import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import type { ServerType } from "@hono/node-server";
 import { startServer } from "./index.js";
 
 // Mock OpenAI API
@@ -75,32 +77,39 @@ mockApp.post("/v1/chat/completions", async (c) => {
   });
 });
 
-const mockOpenAI = Bun.serve({ port: 0, fetch: mockApp.fetch });
-const mockUrl = `http://localhost:${mockOpenAI.port}`;
-
-// Intercept fetch to redirect OpenAI API calls to mock
-const originalFetch = globalThis.fetch;
-Object.defineProperty(globalThis, "fetch", {
-  value: (input: string | URL | Request, init?: RequestInit) => {
-    const url =
-      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url.startsWith("https://api.openai.com/")) {
-      const newUrl = url.replace("https://api.openai.com", mockUrl);
-      return originalFetch(newUrl, init);
-    }
-    return originalFetch(input, init);
-  },
-  writable: true,
-  configurable: true,
-});
-
-process.env.OPENAI_API_KEY = "sk-test-fake";
-
-let proxy: ReturnType<typeof Bun.serve>;
+let mockOpenAI: ServerType;
+let mockUrl: string;
+let proxy: { port: number; stop: () => void };
 let proxyUrl: string;
+const originalFetch = globalThis.fetch;
 
 beforeAll(async () => {
-  const server = await startServer({
+  // Start mock OpenAI server
+  await new Promise<void>((resolve) => {
+    mockOpenAI = serve({ fetch: mockApp.fetch, port: 0 }, (info) => {
+      mockUrl = `http://localhost:${info.port}`;
+      resolve();
+    });
+  });
+
+  // Intercept fetch to redirect OpenAI API calls to mock
+  Object.defineProperty(globalThis, "fetch", {
+    value: (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://api.openai.com/")) {
+        const newUrl = url.replace("https://api.openai.com", mockUrl);
+        return originalFetch(newUrl, init);
+      }
+      return originalFetch(input, init);
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  process.env.OPENAI_API_KEY = "sk-test-fake";
+
+  proxy = await startServer({
     port: 0,
     verbose: false,
     routes: {
@@ -108,13 +117,12 @@ beforeAll(async () => {
       "gpt-5.4-mini": { provider: "openai", model: "gpt-5.4-mini" },
     },
   });
-  proxy = server;
-  proxyUrl = `http://localhost:${server.port}`;
+  proxyUrl = `http://localhost:${proxy.port}`;
 });
 
 afterAll(() => {
   proxy.stop();
-  mockOpenAI.stop();
+  mockOpenAI.close();
   Object.defineProperty(globalThis, "fetch", {
     value: originalFetch,
     writable: true,

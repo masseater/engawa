@@ -1,87 +1,88 @@
 import { Hono } from "hono";
+import { serve } from "@hono/node-server";
 import { loadConfig } from "./config.js";
 import { resolveRoute } from "./router.js";
 import { logRequest, logInfo, logBody, setVerbose } from "./logger.js";
-import { errorResponse } from "./errors.js";
+import { errorResponse, routeNotFoundError } from "./errors.js";
 import { sanitizeBody } from "./sanitize.js";
 import { handleAnthropicRequest, handleAnthropicCountTokens } from "./providers/anthropic.js";
 import { handleOpenAIRequest, handleOpenAICountTokens } from "./providers/openai.js";
-import type { EngawaConfig, ResolvedRoute } from "./types.js";
+import type { EngawaConfig, ProviderHandler, ResolvedRoute } from "./types.js";
+
+const providers: Record<string, ProviderHandler> = {
+  anthropic: {
+    handleRequest: handleAnthropicRequest,
+    handleCountTokens: handleAnthropicCountTokens,
+  },
+  openai: { handleRequest: handleOpenAIRequest, handleCountTokens: handleOpenAICountTokens },
+};
 
 export { defineConfig } from "./config.js";
 export type { EngawaConfig, RouteConfig } from "./types.js";
 
-const app = new Hono();
+type Env = { Variables: { config: EngawaConfig } };
 
-let config: EngawaConfig;
+function createApp(config: EngawaConfig) {
+  const app = new Hono<Env>();
 
-async function dispatch(
-  request: Request,
-  body: Record<string, unknown>,
-  route: ResolvedRoute,
-  handler: "messages" | "count_tokens",
-): Promise<Response> {
-  if (handler === "messages") {
-    if (route.config.provider === "anthropic") {
-      return handleAnthropicRequest(request, body, route);
+  app.use("*", async (c, next) => {
+    c.set("config", config);
+    await next();
+  });
+
+  function resolveAndGuard(
+    body: Record<string, unknown>,
+    path: string,
+  ): { route: ResolvedRoute } | { error: Response } {
+    const modelId = body.model as string;
+    if (!modelId) return { error: errorResponse(400, "Missing 'model' field in request body") };
+    const route = resolveRoute(modelId, config);
+    if (!route) return { error: routeNotFoundError(modelId) };
+    logRequest("POST", path, modelId, route.config.provider, route.targetModel);
+    return { route };
+  }
+
+  function dispatch(
+    request: Request,
+    body: Record<string, unknown>,
+    route: ResolvedRoute,
+    handler: "messages" | "count_tokens",
+  ): Promise<Response> {
+    const provider = providers[route.config.provider];
+    if (!provider) {
+      return Promise.resolve(errorResponse(400, `Unknown provider: ${route.config.provider}`));
     }
-    return handleOpenAIRequest(request, body, route);
+    return handler === "messages"
+      ? provider.handleRequest(request, body, route)
+      : provider.handleCountTokens(request, body, route);
   }
-  // count_tokens
-  if (route.config.provider === "anthropic") {
-    return handleAnthropicCountTokens(request, body, route);
-  }
-  return handleOpenAICountTokens(request, body, route);
+
+  app.post("/v1/messages", async (c) => {
+    const body = (await c.req.json()) as Record<string, unknown>;
+    const result = resolveAndGuard(body, "/v1/messages");
+    if ("error" in result) return result.error;
+    const cleaned = sanitizeBody(body);
+    logBody("incoming", cleaned);
+    return dispatch(c.req.raw, cleaned, result.route, "messages");
+  });
+
+  app.post("/v1/messages/count_tokens", async (c) => {
+    const body = (await c.req.json()) as Record<string, unknown>;
+    const result = resolveAndGuard(body, "/v1/messages/count_tokens");
+    if ("error" in result) return result.error;
+    return dispatch(c.req.raw, sanitizeBody(body), result.route, "count_tokens");
+  });
+
+  app.get("/health", (c) => c.json({ status: "ok" }));
+
+  return app;
 }
 
-app.post("/v1/messages", async (c) => {
-  const body = (await c.req.json()) as Record<string, unknown>;
-  const modelId = body.model as string;
-
-  if (!modelId) {
-    return errorResponse(400, "Missing 'model' field in request body");
-  }
-
-  const route = resolveRoute(modelId, config);
-  if (!route) {
-    return errorResponse(400, `No route configured for model: ${modelId}`);
-  }
-
-  logRequest("POST", "/v1/messages", modelId, route.config.provider, route.targetModel);
-  const cleaned = sanitizeBody(body);
-  logBody("incoming", cleaned);
-  return dispatch(c.req.raw, cleaned, route, "messages");
-});
-
-app.post("/v1/messages/count_tokens", async (c) => {
-  const body = (await c.req.json()) as Record<string, unknown>;
-  const modelId = body.model as string;
-
-  if (!modelId) {
-    return errorResponse(400, "Missing 'model' field in request body");
-  }
-
-  const route = resolveRoute(modelId, config);
-  if (!route) {
-    return errorResponse(400, `No route configured for model: ${modelId}`);
-  }
-
-  logRequest(
-    "POST",
-    "/v1/messages/count_tokens",
-    modelId,
-    route.config.provider,
-    route.targetModel,
-  );
-  return dispatch(c.req.raw, sanitizeBody(body), route, "count_tokens");
-});
-
-app.get("/health", (c) => c.json({ status: "ok" }));
-
 export async function startServer(overrideConfig?: EngawaConfig) {
-  config = overrideConfig ?? (await loadConfig());
+  const config = overrideConfig ?? (await loadConfig());
   setVerbose(config.verbose ?? true);
 
+  const app = createApp(config);
   const port = config.port ?? 3131;
 
   const routeEntries = Object.entries(config.routes);
@@ -91,16 +92,33 @@ export async function startServer(overrideConfig?: EngawaConfig) {
     logInfo(`  ${pattern} → ${rc.provider}${rc.model ? ` (${rc.model})` : ""}`);
   }
 
-  const server = Bun.serve({
-    port,
-    fetch: app.fetch,
+  const maxRetries = 10;
+  let attempt = 0;
+
+  return new Promise<{ port: number; stop: () => void }>((resolve, reject) => {
+    const server = serve(
+      {
+        fetch: app.fetch,
+        port,
+      },
+      (info) => {
+        logInfo(`engawa proxy ready at http://localhost:${info.port}`);
+        resolve({ port: info.port, stop: () => server.close() });
+      },
+    );
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        attempt++;
+        if (attempt >= maxRetries) {
+          reject(new Error(`All ports ${port}-${port + maxRetries} are in use.`));
+          return;
+        }
+        const nextPort = port + attempt;
+        logInfo(`Port ${port + attempt - 1} is in use, trying ${nextPort}...`);
+        server.listen(nextPort);
+      } else {
+        reject(err);
+      }
+    });
   });
-
-  logInfo(`engawa proxy ready at http://localhost:${port}`);
-  return server;
-}
-
-// Direct execution
-if (import.meta.main) {
-  startServer();
 }

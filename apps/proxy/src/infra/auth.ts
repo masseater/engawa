@@ -1,6 +1,7 @@
+import { readFile, writeFile, access } from "node:fs/promises";
 import { logError } from "../logger.js";
 
-export interface AuthResult {
+interface AuthResult {
   headers: Record<string, string>;
   source: "api-key" | "codex-oauth";
 }
@@ -18,6 +19,10 @@ interface CodexAuthFile {
 
 const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token";
+
+// Cache resolved auth to avoid re-reading auth.json on every request
+let cachedAuth: AuthResult | null = null;
+let cacheExpiry = 0;
 
 function getCodexHomePath(): string {
   return process.env.CODEX_HOME || `${process.env.HOME}/.codex`;
@@ -49,8 +54,7 @@ async function refreshCodexToken(refreshToken: string): Promise<CodexAuthFile["t
   };
 
   const authPath = `${getCodexHomePath()}/auth.json`;
-  const file = Bun.file(authPath);
-  const existing = (await file.json()) as CodexAuthFile;
+  const existing = JSON.parse(await readFile(authPath, "utf-8")) as CodexAuthFile;
   const newTokens = {
     id_token: data.id_token ?? existing.tokens?.id_token ?? "",
     access_token: data.access_token,
@@ -59,20 +63,35 @@ async function refreshCodexToken(refreshToken: string): Promise<CodexAuthFile["t
   };
   existing.tokens = newTokens;
   existing.last_refresh = new Date().toISOString();
-  await Bun.write(authPath, JSON.stringify(existing, null, 2));
+  await writeFile(authPath, JSON.stringify(existing, null, 2));
 
   return newTokens;
 }
 
 async function loadCodexAuth(): Promise<AuthResult | null> {
-  const codexHome = getCodexHomePath();
-  const file = Bun.file(`${codexHome}/auth.json`);
-  if (!(await file.exists())) return null;
+  // Return cached auth if token is still valid (check every 60s)
+  if (cachedAuth?.source === "codex-oauth" && Date.now() < cacheExpiry) {
+    return cachedAuth;
+  }
 
-  const auth = (await file.json()) as CodexAuthFile;
+  const codexHome = getCodexHomePath();
+  const authPath = `${codexHome}/auth.json`;
+  const exists = await access(authPath).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) return null;
+
+  const auth = JSON.parse(await readFile(authPath, "utf-8")) as CodexAuthFile;
 
   if (auth.OPENAI_API_KEY) {
-    return { headers: { authorization: `Bearer ${auth.OPENAI_API_KEY}` }, source: "api-key" };
+    const result: AuthResult = {
+      headers: { authorization: `Bearer ${auth.OPENAI_API_KEY}` },
+      source: "api-key",
+    };
+    cachedAuth = result;
+    cacheExpiry = Date.now() + 60_000;
+    return result;
   }
 
   if (!auth.tokens?.access_token) return null;
@@ -93,7 +112,13 @@ async function loadCodexAuth(): Promise<AuthResult | null> {
     headers["chatgpt-account-id"] = tokens.account_id;
   }
 
-  return { headers, source: "codex-oauth" };
+  const result: AuthResult = { headers, source: "codex-oauth" };
+  cachedAuth = result;
+  // Cache until 5 min before token expiry or 60s, whichever is shorter
+  const payload = JSON.parse(atob(tokens.access_token.split(".")[1]!));
+  const tokenExpiresIn = payload.exp * 1000 - Date.now() - 300_000;
+  cacheExpiry = Date.now() + Math.min(Math.max(tokenExpiresIn, 0), 60_000);
+  return result;
 }
 
 export async function resolveAuth(apiKey?: string): Promise<AuthResult | null> {

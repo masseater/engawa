@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Prerequisites
 
-- **Bun** (runtime and test runner)
-- **pnpm** (package manager, version 10.6.5)
+- **pnpm** (package manager, version 10.6.5) — all commands go through pnpm + Turborepo
+- **Node.js** (runtime)
 - OpenAI credentials: set the OpenAI env var, or authenticate via Codex CLI (`codex login`)
 
 ## Commands
+
+All commands run from the repository root via pnpm + Turborepo.
 
 ```bash
 # Install dependencies
@@ -16,15 +18,15 @@ pnpm install
 
 # Development
 pnpm dev                               # turbo dev (runs all workspaces)
-cd apps/proxy && bun run src/index.ts  # run proxy directly
 
 # Build
 pnpm build                             # turbo build (all workspaces)
-cd apps/proxy && bun run build         # build proxy only
 
-# Test (run from apps/proxy/ directory)
-cd apps/proxy && bun test              # run all tests
-cd apps/proxy && bun test src/router.test.ts  # run a single test file
+# Test
+pnpm test                              # turbo test (all workspaces)
+
+# Type check
+pnpm typecheck                         # turbo typecheck (all workspaces)
 
 # Lint & Format
 pnpm lint                              # oxlint via turbo
@@ -32,7 +34,7 @@ pnpm format                            # oxfmt (indent: 2, line width: 100)
 pnpm format:check                      # check formatting without modifying
 
 # Dead code detection
-cd apps/proxy && bun run knip
+pnpm --filter engawa knip
 ```
 
 ## Architecture
@@ -59,31 +61,32 @@ Claude Code -> POST /v1/messages -> engawa (Hono)
 
 The code is being refactored into domain/infra layers. Current state:
 
-| File | Layer | Role | Status |
-|------|-------|------|--------|
-| `domain/convert.ts` | Domain | Pure Anthropic-to-OpenAI conversion (Chat Completions + Responses API) | Canonical |
-| `domain/stream.ts` | Domain | SSE stream state machine and chunk processors | Canonical |
-| `infra/auth.ts` | Infra | OpenAI auth resolution (env var, config, Codex CLI) | Canonical |
-| `providers/openai.ts` | Provider | OpenAI handler — **contains duplicate conversion logic** | Legacy, being extracted |
-| `providers/anthropic.ts` | Provider | Anthropic passthrough | Stable |
-| `router.ts` | Core | Model ID pattern matching | Stable |
-| `sanitize.ts` | Core | Request body cleanup (empty-name tools) | Stable |
-| `config.ts` | Core | Config file loading (XDG) | Stable |
-| `cli.ts` | Core | CLI entrypoint, agent markdown generation | Stable |
-| `index.ts` | Core | Hono app, server bootstrap, route dispatch | Stable |
-| `errors.ts` | Core | Anthropic-format error responses | Stable |
-| `logger.ts` | Core | Console/file logging with verbose toggle | Stable |
-| `types.ts` | Core | Route config and resolved route types | Stable |
+| File                     | Layer    | Role                                                                   | Status                  |
+| ------------------------ | -------- | ---------------------------------------------------------------------- | ----------------------- |
+| `domain/convert.ts`      | Domain   | Pure Anthropic-to-OpenAI conversion (Chat Completions + Responses API) | Canonical               |
+| `domain/stream.ts`       | Domain   | SSE stream state machine and chunk processors                          | Canonical               |
+| `infra/auth.ts`          | Infra    | OpenAI auth resolution (env var, config, Codex CLI)                    | Canonical               |
+| `providers/openai.ts`    | Provider | OpenAI handler — **contains duplicate conversion logic**               | Legacy, being extracted |
+| `providers/anthropic.ts` | Provider | Anthropic passthrough                                                  | Stable                  |
+| `router.ts`              | Core     | Model ID pattern matching                                              | Stable                  |
+| `sanitize.ts`            | Core     | Request body cleanup (empty-name tools)                                | Stable                  |
+| `config.ts`              | Core     | Config file loading (XDG)                                              | Stable                  |
+| `cli.ts`                 | Core     | CLI entrypoint, agent markdown generation                              | Stable                  |
+| `index.ts`               | Core     | Hono app, server bootstrap, route dispatch                             | Stable                  |
+| `errors.ts`              | Core     | Anthropic-format error responses                                       | Stable                  |
+| `logger.ts`              | Core     | Console/file logging with verbose toggle                               | Stable                  |
+| `types.ts`               | Core     | Route config and resolved route types                                  | Stable                  |
 
 ### Two OpenAI API Paths
 
 The proxy uses different OpenAI APIs depending on auth source:
+
 - **Standard credentials** (env var or route config) -> Chat Completions API
 - **Codex CLI credentials** (auth.json) -> Responses API — always streams, has limited parameter support
 
 ### Key Design Decisions
 
-- **Bun runtime** — uses Bun APIs (`Bun.serve`, `Bun.file`, `Bun.spawn`, `Bun.write`). Do not use Node.js equivalents where Bun APIs exist.
+- **Node.js runtime** — uses `@hono/node-server` for HTTP, `node:fs/promises` for file I/O, `node:child_process` for process spawning. Uses `tsx` for dev mode.
 - **Streaming conversion** — OpenAI SSE chunks are converted to Anthropic SSE format via a `StreamState` state machine that tracks content blocks, tool calls, and indices
 - **Config loading** — searches `$XDG_CONFIG_HOME/engawa/config.ts` (default: `$HOME/.config/engawa/config.ts`), falls back to anthropic-passthrough-only config
 - **CLI dual mode** — `engawa` spawns both the proxy and Claude Code process; `engawa --no-claude` runs proxy only
@@ -94,6 +97,7 @@ The proxy uses different OpenAI APIs depending on auth source:
 ### DDD Refactoring (in progress)
 
 `providers/openai.ts` still contains legacy conversion logic that duplicates `domain/convert.ts` and `domain/stream.ts`. When writing new code:
+
 - **Pure conversion logic** -> `domain/convert.ts`
 - **Stream processing** -> `domain/stream.ts`
 - **Auth/external I/O** -> `infra/auth.ts`
@@ -101,14 +105,15 @@ The proxy uses different OpenAI APIs depending on auth source:
 
 ### Testing
 
-Tests live alongside source in `apps/proxy/src/` (`*.test.ts`). Uses `bun:test` framework.
+Tests live alongside source in `apps/proxy/src/` (`*.test.ts`). Uses vitest.
 
 ```bash
-cd apps/proxy && bun test              # all tests
-cd apps/proxy && bun test src/router.test.ts  # single file
+pnpm test                              # all tests (via turbo)
+pnpm --filter engawa test -- src/router.test.ts  # single file
 ```
 
 **Test patterns used in this codebase:**
+
 - `proxy.test.ts` — integration test: starts real proxy + mock OpenAI server on random ports (`port: 0`), intercepts `globalThis.fetch` to redirect API calls to mock
 - `router.test.ts` — unit test: tests `resolveRoute()` with in-memory config
 - `errors.test.ts` — unit test: tests error type mapping and response format
@@ -130,4 +135,4 @@ cd apps/proxy && bun test src/router.test.ts  # single file
 
 ## CI
 
-GitHub Actions on push to `master`: runs `bun test` + `pnpm lint`, then publishes to npm if `apps/proxy/package.json` version is new.
+GitHub Actions on push to `master`: runs `pnpm test` + `pnpm lint`, then publishes to npm if `apps/proxy/package.json` version is new.
