@@ -1,8 +1,6 @@
 import { EFFORT_LEVELS } from "./types.js";
 import type { EngawaConfig, RouteConfig, ResolvedRoute, EffortLevel } from "./types.js";
 
-type RouteEntry = [pattern: string, config: RouteConfig];
-
 function matchPattern(pattern: string, modelId: string): boolean {
   if (pattern === modelId) return true;
   if (pattern.endsWith("*")) {
@@ -23,45 +21,23 @@ function parseEffortSuffix(modelId: string): { baseModel: string; effort: Effort
   return null;
 }
 
-// Pre-compiled route entries to avoid Object.entries() on every request
-const routeCache = new WeakMap<Record<string, RouteConfig>, RouteEntry[]>();
-
-function getRouteEntries(routes: Record<string, RouteConfig>): RouteEntry[] {
-  let entries = routeCache.get(routes);
-  if (!entries) {
-    entries = Object.entries(routes);
-    routeCache.set(routes, entries);
-  }
-  return entries;
-}
-
-function findMatch(
-  entries: RouteEntry[],
-  modelId: string,
-): ResolvedRoute | null {
-  for (const [pattern, routeConfig] of entries) {
+function findMatch(routes: Record<string, RouteConfig>, modelId: string): ResolvedRoute | null {
+  for (const [pattern, routeConfig] of Object.entries(routes)) {
     if (matchPattern(pattern, modelId)) {
-      return {
-        pattern,
-        config: routeConfig,
-        targetModel: routeConfig.model ?? modelId,
-      };
+      return { pattern, config: routeConfig, targetModel: routeConfig.model ?? modelId };
     }
   }
   return null;
 }
 
 export function resolveRoute(modelId: string, config: EngawaConfig): ResolvedRoute | null {
-  const entries = getRouteEntries(config.routes);
-
-  // Try exact match first
-  const direct = findMatch(entries, modelId);
+  const direct = findMatch(config.routes, modelId);
   if (direct) return direct;
 
   // Try stripping effort suffix: "o3-high" → route "o3" + effort "high"
   const parsed = parseEffortSuffix(modelId);
   if (parsed) {
-    const match = findMatch(entries, parsed.baseModel);
+    const match = findMatch(config.routes, parsed.baseModel);
     if (match) {
       return {
         ...match,

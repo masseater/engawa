@@ -19,7 +19,6 @@ export interface StreamState {
   inputTokens: number;
   outputTokens: number;
   stopped: boolean;
-  responseId: string | null;
 }
 
 export function createStreamState(model: string): StreamState {
@@ -34,7 +33,6 @@ export function createStreamState(model: string): StreamState {
     inputTokens: 0,
     outputTokens: 0,
     stopped: false,
-    responseId: null,
   };
 }
 
@@ -286,7 +284,6 @@ export function processResponsesApiChunk(
     state.openToolBlocks.clear();
   } else if (type === "response.completed") {
     const response = chunk.response as Record<string, unknown> | undefined;
-    if (typeof response?.id === "string") state.responseId = response.id;
     const usage = response?.usage as Record<string, number> | undefined;
     if (usage) {
       state.inputTokens = usage.input_tokens ?? 0;
@@ -356,8 +353,8 @@ export function createSSEStream(
 
           const chunk = JSON.parse(dataStr) as Record<string, unknown>;
           const events = chunkProcessor(chunk, state);
-          for (const event of events) {
-            controller.enqueue(encoder.encode(event));
+          if (events.length > 0) {
+            controller.enqueue(encoder.encode(events.join("")));
           }
         }
       }
@@ -372,15 +369,13 @@ export async function collectResponsesStream(
 ): Promise<Record<string, unknown> | null> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  const chunks: string[] = [];
+  let buffer = "";
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(decoder.decode(value, { stream: true }));
+    buffer += decoder.decode(value, { stream: true });
   }
-
-  const buffer = chunks.join("");
   for (const block of buffer.split("\n")) {
     const trimmed = block.trim();
     if (!trimmed.startsWith("data: ")) continue;

@@ -34,26 +34,14 @@ function convertSystemMessage(
 }
 
 function extractTextContent(
-  content: string | Array<{ type: string; text?: string; [key: string]: unknown }>,
+  content: string | Array<{ type: string; text?: string; [key: string]: unknown }> | undefined,
 ): string {
   if (typeof content === "string") return content;
+  if (!content) return "";
   return content
     .filter((b) => b.type === "text")
     .map((b) => b.text ?? "")
     .join("");
-}
-
-function extractToolResultText(
-  content: string | Array<{ type: string; text?: string }> | undefined,
-): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text ?? "")
-      .join("");
-  }
-  return "";
 }
 
 function extractSystemText(
@@ -116,7 +104,7 @@ function convertMessages(
     }
 
     for (const tr of toolResultBlocks) {
-      let content = extractToolResultText(tr.content);
+      let content = extractTextContent(tr.content);
       if (tr.is_error) content = `[Error] ${content}`;
       result.push({ role: "tool", tool_call_id: tr.tool_use_id ?? "", content });
     }
@@ -242,7 +230,7 @@ export function buildResponsesApiRequest(
           arguments: JSON.stringify(block.input ?? {}),
         });
       } else if (block.type === "tool_result") {
-        const resultContent = extractToolResultText(
+        const resultContent = extractTextContent(
           block.content as string | Array<{ type: string; text?: string }> | undefined,
         );
         input.push({

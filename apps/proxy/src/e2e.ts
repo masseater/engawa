@@ -6,17 +6,23 @@
 import { startServer } from "./index.js";
 import { loadConfig } from "./config.js";
 
-let MODEL = "gpt-5.4";
-
-function makeRequest(overrides: Record<string, unknown> = {}) {
+function makeRequest(model: string, overrides: Record<string, unknown> = {}) {
   return {
-    model: MODEL,
+    model,
     system: "You are a helpful assistant. Reply in one short sentence.",
     messages: [{ role: "user", content: "Say hello." }],
     max_tokens: 256,
     stream: false,
     ...overrides,
   };
+}
+
+function post(proxyUrl: string, body: Record<string, unknown>) {
+  return fetch(`${proxyUrl}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 function ok(label: string) {
@@ -32,7 +38,7 @@ function parseSSEEvents(text: string) {
   const blocks = text.split("\n\n").filter((s) => s.trim());
   const eventTypes = blocks
     .map((block) => block.split("\n").find((l) => l.startsWith("event: "))?.slice(7))
-    .filter(Boolean) as string[];
+    .filter((x): x is string => x !== undefined);
   return { blocks, eventTypes };
 }
 
@@ -48,13 +54,19 @@ function extractTextDeltas(blocks: string[]): string {
     .join("");
 }
 
-async function testNonStreaming(proxyUrl: string) {
+const weatherTool = {
+  name: "get_weather",
+  description: "Get the weather for a city",
+  input_schema: {
+    type: "object",
+    properties: { city: { type: "string", description: "City name" } },
+    required: ["city"],
+  },
+};
+
+async function testNonStreaming(proxyUrl: string, model: string) {
   console.log("\n[non-streaming]");
-  const res = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(makeRequest()),
-  });
+  const res = await post(proxyUrl, makeRequest(model));
 
   if (!res.ok) {
     fail("response", `status ${res.status}: ${await res.text()}`);
@@ -83,20 +95,16 @@ async function testNonStreaming(proxyUrl: string) {
   ok(`usage: in=${usage.input_tokens} out=${usage.output_tokens}`);
 }
 
-async function testMultiTurn(proxyUrl: string) {
+async function testMultiTurn(proxyUrl: string, model: string) {
   console.log("\n[multi-turn (assistant output_text)]");
-  const res = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(makeRequest({
-      system: "Reply in one word.",
-      messages: [
-        { role: "user", content: "Say hello." },
-        { role: "assistant", content: [{ type: "text", text: "Hello!" }] },
-        { role: "user", content: "Now say goodbye." },
-      ],
-    })),
-  });
+  const res = await post(proxyUrl, makeRequest(model, {
+    system: "Reply in one word.",
+    messages: [
+      { role: "user", content: "Say hello." },
+      { role: "assistant", content: [{ type: "text", text: "Hello!" }] },
+      { role: "user", content: "Now say goodbye." },
+    ],
+  }));
 
   if (!res.ok) {
     fail("response", `status ${res.status}: ${await res.text()}`);
@@ -112,63 +120,35 @@ async function testMultiTurn(proxyUrl: string) {
   ok(`text="${content[0].text.slice(0, 60)}"`);
 }
 
-async function testStreaming(proxyUrl: string) {
+async function testStreaming(proxyUrl: string, model: string) {
   console.log("\n[streaming]");
-  const res = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(makeRequest({ stream: true })),
-  });
+  const res = await post(proxyUrl, makeRequest(model, { stream: true }));
 
   if (!res.ok) {
     fail("response", `status ${res.status}: ${await res.text()}`);
     return;
   }
 
-  if (!res.body) {
-    fail("body", "no response body");
-    return;
-  }
-
   const { blocks, eventTypes } = parseSSEEvents(await res.text());
 
-  const required = ["message_start", "content_block_start", "content_block_delta", "message_stop"];
-  for (const evt of required) {
-    if (eventTypes.includes(evt)) {
-      ok(evt);
-    } else {
-      fail(evt, `missing from stream (got: ${eventTypes.join(", ")})`);
-    }
+  for (const evt of ["message_start", "content_block_start", "content_block_delta", "message_stop"]) {
+    if (eventTypes.includes(evt)) ok(evt);
+    else fail(evt, `missing from stream (got: ${eventTypes.join(", ")})`);
   }
 
   ok(`streamed text="${extractTextDeltas(blocks).slice(0, 60)}..."`);
 }
 
-async function testToolUse(proxyUrl: string) {
+async function testToolUse(proxyUrl: string, model: string) {
   console.log("\n[tool_use round-trip]");
 
-  // Step 1: send request with tools
-  const res1 = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      system: "Use the get_weather tool to answer weather questions.",
-      messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
-      max_tokens: 512,
-      tools: [
-        {
-          name: "get_weather",
-          description: "Get the weather for a city",
-          input_schema: {
-            type: "object",
-            properties: { city: { type: "string", description: "City name" } },
-            required: ["city"],
-          },
-        },
-      ],
-      stream: false,
-    }),
+  const res1 = await post(proxyUrl, {
+    model,
+    system: "Use the get_weather tool to answer weather questions.",
+    messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
+    max_tokens: 512,
+    tools: [weatherTool],
+    stream: false,
   });
 
   if (!res1.ok) {
@@ -181,7 +161,7 @@ async function testToolUse(proxyUrl: string) {
   const toolUseBlock = content1?.find((c) => c.type === "tool_use");
 
   if (!toolUseBlock) {
-    fail("tool_use", `no tool_use block in response: ${JSON.stringify(content1?.map((c) => c.type))}`);
+    fail("tool_use", `no tool_use block: ${JSON.stringify(content1?.map((c) => c.type))}`);
     return;
   }
   ok(`tool_use: ${toolUseBlock.name}(${JSON.stringify(toolUseBlock.input)})`);
@@ -192,41 +172,17 @@ async function testToolUse(proxyUrl: string) {
   }
   ok(`stop_reason=tool_use`);
 
-  // Step 2: send tool_result back
-  const res2 = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      system: "Use the get_weather tool to answer weather questions.",
-      messages: [
-        { role: "user", content: "What's the weather in Tokyo?" },
-        { role: "assistant", content: content1 },
-        {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: toolUseBlock.id,
-              content: "Sunny, 25°C",
-            },
-          ],
-        },
-      ],
-      max_tokens: 512,
-      tools: [
-        {
-          name: "get_weather",
-          description: "Get the weather for a city",
-          input_schema: {
-            type: "object",
-            properties: { city: { type: "string", description: "City name" } },
-            required: ["city"],
-          },
-        },
-      ],
-      stream: false,
-    }),
+  const res2 = await post(proxyUrl, {
+    model,
+    system: "Use the get_weather tool to answer weather questions.",
+    messages: [
+      { role: "user", content: "What's the weather in Tokyo?" },
+      { role: "assistant", content: content1 },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseBlock.id, content: "Sunny, 25°C" }] },
+    ],
+    max_tokens: 512,
+    tools: [weatherTool],
+    stream: false,
   });
 
   if (!res2.ok) {
@@ -244,21 +200,16 @@ async function testToolUse(proxyUrl: string) {
   ok(`response after tool_result: "${textBlock.text.slice(0, 80)}..."`);
 }
 
-async function testThinking(proxyUrl: string) {
+async function testThinking(proxyUrl: string, model: string) {
   console.log("\n[thinking / reasoning effort]");
-  const res = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      system: "Reply in one sentence.",
-      messages: [{ role: "user", content: "What is 2+2?" }],
-      max_tokens: 1024,
-      thinking: { budget_tokens: 1023, type: "enabled" },
-      output_config: { effort: "medium" },
-      stream: true,
-    }),
-  });
+  const res = await post(proxyUrl, makeRequest(model, {
+    system: "Reply in one sentence.",
+    messages: [{ role: "user", content: "What is 2+2?" }],
+    max_tokens: 1024,
+    thinking: { budget_tokens: 1023, type: "enabled" },
+    output_config: { effort: "medium" },
+    stream: true,
+  }));
 
   if (!res.ok) {
     fail("response", `status ${res.status}: ${await res.text()}`);
@@ -274,32 +225,19 @@ async function testThinking(proxyUrl: string) {
   }
 
   const text = extractTextDeltas(blocks);
-  if (text.length > 0) {
-    ok(`text="${text.slice(0, 60)}"`);
-  } else {
-    fail("text", "no text deltas in stream");
-  }
+  if (text.length > 0) ok(`text="${text.slice(0, 60)}"`);
+  else fail("text", "no text deltas in stream");
 }
 
-async function testStreamingToolUse(proxyUrl: string) {
+async function testStreamingToolUse(proxyUrl: string, model: string) {
   console.log("\n[streaming tool_use]");
-  const res = await fetch(`${proxyUrl}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      system: "Always use the get_time tool. Do not respond with text.",
-      messages: [{ role: "user", content: "What time is it?" }],
-      max_tokens: 512,
-      tools: [
-        {
-          name: "get_time",
-          description: "Get the current time",
-          input_schema: { type: "object", properties: {}, required: [] },
-        },
-      ],
-      stream: true,
-    }),
+  const res = await post(proxyUrl, {
+    model,
+    system: "Always use the get_time tool. Do not respond with text.",
+    messages: [{ role: "user", content: "What time is it?" }],
+    max_tokens: 512,
+    tools: [{ name: "get_time", description: "Get the current time", input_schema: { type: "object", properties: {}, required: [] } }],
+    stream: true,
   });
 
   if (!res.ok) {
@@ -309,28 +247,17 @@ async function testStreamingToolUse(proxyUrl: string) {
 
   const { blocks } = parseSSEEvents(await res.text());
 
-  const hasToolUseStart = blocks.some((block) => block.includes('"tool_use"'));
-  const hasInputJsonDelta = blocks.some((block) => block.includes('"input_json_delta"'));
-
-  if (hasToolUseStart) {
+  if (blocks.some((b) => b.includes('"tool_use"'))) {
     ok("tool_use content_block_start");
+  } else if (extractTextDeltas(blocks).length > 0) {
+    ok("model responded with text instead of tool (acceptable)");
   } else {
-    if (extractTextDeltas(blocks).length > 0) {
-      ok("model responded with text instead of tool (acceptable)");
-    } else {
-      fail("tool_use", "no tool_use block and no text in stream");
-    }
+    fail("tool_use", "no tool_use block and no text in stream");
   }
 
-  if (hasInputJsonDelta) {
-    ok("input_json_delta streamed");
-  }
-
-  if (blocks.some((block) => block.includes('"message_delta"'))) {
-    ok("message_delta present");
-  } else {
-    fail("message_delta", "missing from stream");
-  }
+  if (blocks.some((b) => b.includes('"input_json_delta"'))) ok("input_json_delta streamed");
+  if (blocks.some((b) => b.includes('"message_delta"'))) ok("message_delta present");
+  else fail("message_delta", "missing from stream");
 }
 
 async function main() {
@@ -340,7 +267,7 @@ async function main() {
     console.error("No OpenAI route in config. Add one to engawa.config.ts.");
     process.exit(1);
   }
-  MODEL = route[0];
+  const model = route[0];
 
   console.log("Starting proxy...");
   const server = await startServer({ ...config, verbose: true });
@@ -348,12 +275,12 @@ async function main() {
   console.log(`Proxy ready at ${proxyUrl}`);
 
   try {
-    await testNonStreaming(proxyUrl);
-    await testMultiTurn(proxyUrl);
-    await testStreaming(proxyUrl);
-    await testToolUse(proxyUrl);
-    await testThinking(proxyUrl);
-    await testStreamingToolUse(proxyUrl);
+    await testNonStreaming(proxyUrl, model);
+    await testMultiTurn(proxyUrl, model);
+    await testStreaming(proxyUrl, model);
+    await testToolUse(proxyUrl, model);
+    await testThinking(proxyUrl, model);
+    await testStreamingToolUse(proxyUrl, model);
   } finally {
     server.stop();
   }
