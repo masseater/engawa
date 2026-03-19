@@ -138,16 +138,6 @@ engawa logs             # proxy ログを表示
 engawa logs -f          # proxy ログをフォロー
 ```
 
-## Development
-
-```bash
-pnpm install
-pnpm test             # vitest
-pnpm lint             # oxlint
-pnpm format           # oxfmt
-pnpm dev              # 開発サーバー（proxy のみ）
-```
-
 ## License
 
 MIT
